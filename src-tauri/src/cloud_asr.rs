@@ -285,6 +285,90 @@ pub async fn transcribe_0g_whisper(req: CloudAsrRequest) -> Result<CloudAsrResul
     })
 }
 
+/// High-level convenience wrapper used by [`crate::actions`] when the user
+/// has flipped `cloud_asr_enabled` in settings.
+///
+/// Pulls everything cloud ASR needs out of [`crate::settings::AppSettings`]
+/// (provider URL, API key, target model, TEE strictness, language hint,
+/// custom vocabulary) and returns just the transcribed text, mirroring the
+/// signature of the local [`crate::managers::transcription::TranscriptionManager::transcribe`]
+/// so the call site stays a one-liner.
+///
+/// Lives here rather than in `actions.rs` so the call site does not need to
+/// learn about WAV encoding, language code normalisation, or initial-prompt
+/// construction — those are cloud-ASR concerns.
+pub async fn transcribe_with_app_settings(
+    audio_samples: Vec<f32>,
+    settings: &crate::settings::AppSettings,
+) -> Result<String> {
+    use crate::audio_toolkit::encode_wav_bytes;
+
+    let provider_id = settings.cloud_asr_provider_id.clone();
+
+    let provider = settings
+        .post_process_provider(&provider_id)
+        .ok_or_else(|| {
+            anyhow!(
+                "cloud ASR provider '{}' is not registered in post_process_providers",
+                provider_id
+            )
+        })?;
+
+    let api_key = settings
+        .post_process_api_keys
+        .get(&provider_id)
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "cloud ASR provider '{}' has no API key configured",
+                provider_id
+            )
+        })?
+        .clone();
+
+    let wav =
+        encode_wav_bytes(&audio_samples).context("encoding samples to WAV for cloud ASR upload")?;
+
+    // Map Handy's language codes to the BCP-47 subset Whisper understands.
+    // Mirrors the local-engine logic in `managers/transcription.rs` so cloud
+    // and local pipelines never disagree on what language the user picked.
+    let language: Option<String> = match settings.selected_language.as_str() {
+        "auto" | "" => None,
+        "zh-Hans" | "zh-Hant" | "zh-CN" | "zh-TW" => Some("zh".to_string()),
+        other => Some(other.to_string()),
+    };
+
+    let mut req = CloudAsrRequest::new(&provider.base_url, &api_key, wav)
+        .with_model(&settings.cloud_asr_model)
+        .with_require_tee_proof(settings.cloud_asr_require_tee_proof);
+
+    if let Some(ref lang) = language {
+        req = req.with_language(lang.clone());
+        // Whisper omits Chinese punctuation by default; biasing with an
+        // initial prompt that already contains punctuation materially
+        // improves the raw transcript. This is a partial fix — LLM cleanup
+        // remains the production-grade answer.
+        if lang == "zh" {
+            req = req.with_initial_prompt(ZH_INITIAL_PROMPT);
+        }
+    }
+
+    // Fold any user-defined custom vocabulary into the initial prompt so it
+    // affects cloud ASR the same way it affects the local Whisper engine
+    // (see `WhisperInferenceParams.initial_prompt` in transcription.rs).
+    if !settings.custom_words.is_empty() {
+        let extras = settings.custom_words.join(", ");
+        let combined = match req.initial_prompt.as_deref() {
+            Some(existing) => format!("{} 自定义词汇：{}.", existing, extras),
+            None => format!("Use these custom words when relevant: {}.", extras),
+        };
+        req = req.with_initial_prompt(combined);
+    }
+
+    let result = transcribe_0g_whisper(req).await?;
+    Ok(result.text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

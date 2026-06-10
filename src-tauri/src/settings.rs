@@ -401,6 +401,33 @@ pub struct AppSettings {
     pub post_process_prompts: Vec<LLMPrompt>,
     #[serde(default)]
     pub post_process_selected_prompt_id: Option<String>,
+    // ---- Cloud ASR (0G Compute) -----------------------------------------
+    /// When true, audio is uploaded to a cloud ASR provider (currently 0G
+    /// Compute Router's Whisper-large-v3 inside a TEE) instead of running a
+    /// local whisper.cpp / Parakeet engine. Defaults to false so existing
+    /// users keep their fully-local pipeline.
+    #[serde(default)]
+    pub cloud_asr_enabled: bool,
+    /// `PostProcessProvider.id` of the cloud ASR backend. Reuses the
+    /// post-process provider registry so the API key and base URL configured
+    /// for `zerog` are picked up automatically.
+    #[serde(default = "default_cloud_asr_provider_id")]
+    pub cloud_asr_provider_id: String,
+    /// Model identifier sent to the cloud ASR endpoint. Defaults to
+    /// `whisper-large-v3` which 0G ships first-party.
+    #[serde(default = "default_cloud_asr_model")]
+    pub cloud_asr_model: String,
+    /// If true, reject responses that lack a `tee_proof` field. Use this for
+    /// "TEE-only" mode; off by default so the call still succeeds when the
+    /// router routes to a provider that has not enabled attestation yet.
+    #[serde(default)]
+    pub cloud_asr_require_tee_proof: bool,
+    /// If a cloud ASR call fails (network, 5xx, attestation rejected with
+    /// `require_tee_proof`), fall back to the local engine. On by default so
+    /// transient cloud outages do not eat a user's recording.
+    #[serde(default = "default_cloud_asr_fallback_to_local")]
+    pub cloud_asr_fallback_to_local: bool,
+    // ---- End Cloud ASR --------------------------------------------------
     #[serde(default)]
     pub mute_while_recording: bool,
     #[serde(default)]
@@ -738,6 +765,30 @@ fn default_whisper_gpu_device() -> i32 {
     -1 // auto
 }
 
+// ---- Cloud ASR defaults ----------------------------------------------------
+
+/// `PostProcessProvider.id` used when cloud ASR is enabled but no specific
+/// provider has been chosen. Matches the entry registered in
+/// [`default_post_process_providers`].
+fn default_cloud_asr_provider_id() -> String {
+    "zerog".to_string()
+}
+
+/// Default ASR model identifier for the 0G Compute Router. Lives next to
+/// the constant in `cloud_asr` but duplicated here to avoid pulling
+/// `cloud_asr` into the settings dependency graph (settings is loaded
+/// before any networking module would be useful).
+fn default_cloud_asr_model() -> String {
+    "whisper-large-v3".to_string()
+}
+
+/// Whether a cloud ASR failure should silently fall back to the local
+/// engine. `true` matches the principle of least surprise — a transient
+/// 503 should not eat the user's recording.
+fn default_cloud_asr_fallback_to_local() -> bool {
+    true
+}
+
 fn default_typing_tool() -> TypingTool {
     TypingTool::Auto
 }
@@ -887,6 +938,11 @@ pub fn get_default_settings() -> AppSettings {
         post_process_models: default_post_process_models(),
         post_process_prompts: default_post_process_prompts(),
         post_process_selected_prompt_id: None,
+        cloud_asr_enabled: false,
+        cloud_asr_provider_id: default_cloud_asr_provider_id(),
+        cloud_asr_model: default_cloud_asr_model(),
+        cloud_asr_require_tee_proof: false,
+        cloud_asr_fallback_to_local: default_cloud_asr_fallback_to_local(),
         mute_while_recording: false,
         append_trailing_space: false,
         app_language: default_app_language(),

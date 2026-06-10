@@ -543,9 +543,42 @@ impl ShortcutAction for TranscribeAction {
                         crate::audio_toolkit::save_wav_file(&wav_path, &samples_for_wav)
                     });
 
-                    // Transcribe concurrently with WAV save
+                    // Transcribe concurrently with WAV save.
+                    //
+                    // Three paths depending on settings:
+                    //   1. `cloud_asr_enabled = false`  -> local engine (legacy behavior).
+                    //   2. cloud enabled + success      -> use 0G text directly.
+                    //   3. cloud enabled + error + `cloud_asr_fallback_to_local = true`
+                    //                                   -> log and run local as a safety net.
                     let transcription_time = Instant::now();
-                    let transcription_result = tm.transcribe(samples);
+                    let settings_snapshot = get_settings(&ah);
+                    let transcription_result: anyhow::Result<String> = if settings_snapshot
+                        .cloud_asr_enabled
+                    {
+                        let fallback = settings_snapshot.cloud_asr_fallback_to_local;
+                        // `transcribe_with_app_settings` consumes `samples`; clone only
+                        // when we might need the audio again for the local fallback path.
+                        let samples_for_fallback = if fallback {
+                            samples.clone()
+                        } else {
+                            Vec::new()
+                        };
+                        match crate::cloud_asr::transcribe_with_app_settings(
+                            samples,
+                            &settings_snapshot,
+                        )
+                        .await
+                        {
+                            Ok(text) => Ok(text),
+                            Err(e) if fallback => {
+                                warn!("0G cloud ASR failed ({}); falling back to local engine", e);
+                                tm.transcribe(samples_for_fallback)
+                            }
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        tm.transcribe(samples)
+                    };
 
                     // Await WAV save and verify
                     let wav_saved = match wav_handle.await {
