@@ -238,6 +238,20 @@
         "description": "调整音频反馈的音量"
       }
     },
+    "cloudAsr": {
+      "enabled": {
+        "label": "使用 0G 云端 ASR",
+        "description": "将音频发送到 0G Compute Router（Whisper-large-v3），推理在 Intel TDX + NVIDIA H100/H200 TEE 中进行。服务节点物理上无法查看原始音频。需要先在「Post Processing」设置中填写 0G 的 API key。"
+      },
+      "requireTeeProof": {
+        "label": "强制 TEE 验证",
+        "description": "拒绝未带 TEE attestation 证明的响应。适合严格隐私场景；默认关闭，因为 0G Router 在过渡期可能会路由到非 TeeML 的提供方。"
+      },
+      "fallback": {
+        "label": "失败时回落到本地引擎",
+        "description": "云端 ASR 失败时，静默回退到本地 whisper.cpp / Parakeet 而不是返回错误。默认开启，避免临时的云端中断丢失录音。"
+      }
+    },
     "advanced": {
       "title": "高级",
       "groups": {
@@ -245,6 +259,7 @@
         "output": "输出",
         "transcription": "转录",
         "history": "历史",
+        "cloudAsr": "0G 云端 ASR（隐私 TEE）",
         "experimental": "实验性"
       },
       "experimentalToggle": {

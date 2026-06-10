@@ -238,6 +238,20 @@
         "description": "Adjust the volume of audio feedback sounds"
       }
     },
+    "cloudAsr": {
+      "enabled": {
+        "label": "Use 0G Cloud ASR",
+        "description": "Route audio to 0G Compute Router (Whisper-large-v3) running inside an Intel TDX + NVIDIA H100/H200 TEE. The provider operator cannot inspect raw audio. Requires the 'zerog' API key configured in Post Processing settings."
+      },
+      "requireTeeProof": {
+        "label": "Require TEE Attestation",
+        "description": "Reject responses that do not include a TEE attestation proof. Use this for strict-mode privacy; off by default since the 0G router may route to non-TeeML providers during rollout."
+      },
+      "fallback": {
+        "label": "Fall Back to Local Engine",
+        "description": "If a cloud ASR call fails, silently retry on the local whisper.cpp / Parakeet engine instead of returning an error. On by default so transient cloud outages do not eat recordings."
+      }
+    },
     "advanced": {
       "title": "Advanced",
       "groups": {
@@ -245,6 +259,7 @@
         "output": "Output",
         "transcription": "Transcription",
         "history": "History",
+        "cloudAsr": "0G Cloud ASR (Private TEE)",
         "experimental": "Experimental"
       },
       "experimentalToggle": {
