@@ -571,6 +571,17 @@ fn default_post_process_providers() -> Vec<PostProcessProvider> {
             models_endpoint: Some("/models".to_string()),
             supports_structured_output: true,
         },
+        // 0G Compute Router — privacy-first inference inside Intel TDX + NVIDIA H100/H200 TEE.
+        // Models include Deepseek chat-v3-0324, Qwen3.6 Plus, GLM-5-FP8, Whisper-large-v3, etc.
+        // See https://0g.ai/blog/0g-private-computer and https://docs.0g.ai
+        PostProcessProvider {
+            id: "zerog".to_string(),
+            label: "0G Compute (Private TEE)".to_string(),
+            base_url: "https://router-api.0g.ai/v1".to_string(),
+            allow_base_url_edit: false,
+            models_endpoint: Some("/models".to_string()),
+            supports_structured_output: true,
+        },
     ];
 
     // Note: We always include Apple Intelligence on macOS ARM64 without checking availability
@@ -639,11 +650,88 @@ fn default_post_process_models() -> HashMap<String, String> {
 }
 
 fn default_post_process_prompts() -> Vec<LLMPrompt> {
-    vec![LLMPrompt {
-        id: "default_improve_transcriptions".to_string(),
-        name: "Improve Transcriptions".to_string(),
-        prompt: "Clean this transcript:\n1. Fix spelling, capitalization, and punctuation errors\n2. Convert number words to digits (twenty-five → 25, ten percent → 10%, five dollars → $5)\n3. Replace spoken punctuation with symbols (period → ., comma → ,, question mark → ?)\n4. Remove filler words (um, uh, like as filler)\n5. Keep the language in the original version (if it was french, keep it in french for example)\n\nPreserve exact meaning and word order. Do not paraphrase or reorder content.\n\nReturn only the cleaned transcript.\n\nTranscript:\n${output}".to_string(),
-    }]
+    vec![
+        LLMPrompt {
+            id: "default_improve_transcriptions".to_string(),
+            name: "Improve Transcriptions".to_string(),
+            prompt: "Clean this transcript:\n1. Fix spelling, capitalization, and punctuation errors\n2. Convert number words to digits (twenty-five → 25, ten percent → 10%, five dollars → $5)\n3. Replace spoken punctuation with symbols (period → ., comma → ,, question mark → ?)\n4. Remove filler words (um, uh, like as filler)\n5. Keep the language in the original version (if it was french, keep it in french for example)\n\nPreserve exact meaning and word order. Do not paraphrase or reorder content.\n\nReturn only the cleaned transcript.\n\nTranscript:\n${output}".to_string(),
+        },
+        // 中文通用清洗：补标点 + 去口头禅 + 保留英文术语
+        // Whisper-large-v3 在中文场景下不输出标点（see https://github.com/ggml-org/whisper.cpp/issues/2532），
+        // 此 prompt 是中文产品体验的关键 — 没有它中文转写实际不可用。
+        LLMPrompt {
+            id: "zh_punctuation_cleanup".to_string(),
+            name: "中文：补标点 + 去口头禅".to_string(),
+            prompt: "你是一个中文语音转写后处理助手。\n\n\
+输入是 Whisper 模型对一段普通话语音的转写，**没有标点**，可能包含口头禅\
+（嗯、啊、那个、就是、然后）和重复说的内容。\n\n\
+请按以下规则输出整理后的文本：\n\
+1. 补全标点符号（，。？！；：“”‘’——……）\n\
+2. 去掉口头禅和明显的重复\n\
+3. 不要改变原意，不要添加或删除信息\n\
+4. 数字保持数字形式（如 2025 而不是“二零二五”）\n\
+5. 中英文混合时，英文术语保持原样（如 useEffect、API、JSON、Promise）\n\
+6. 不要加任何前后缀解释，只输出整理后的中文文本\n\n\
+原始转写：\n${output}".to_string(),
+        },
+        // 中文邮件场景：转为书面化中文
+        LLMPrompt {
+            id: "zh_email".to_string(),
+            name: "中文：邮件 / 正式书面".to_string(),
+            prompt: "你是一个中文邮件助手。\n\n\
+输入是用户口述邮件内容的转写（无标点）。请输出整理后的书面化中文：\n\
+1. 补全标点\n\
+2. 去口头禅\n\
+3. 口语连接词（“然后”、“就是”、“那个”）改成更正式的连接\n\
+4. 保留中英文术语原样\n\
+5. 不要添加问候语、签名、抬头等用户没说的内容\n\
+6. 只输出整理后的文本，不要解释\n\n\
+原始转写：\n${output}".to_string(),
+        },
+        // 中文即时通讯场景：保留口语化，加必要标点
+        LLMPrompt {
+            id: "zh_chat".to_string(),
+            name: "中文：微信 / 即时通讯".to_string(),
+            prompt: "你是一个中文即时通讯助手。\n\n\
+输入是用户口述微信/QQ/Slack 消息的转写。请保持口语化，但加上必要的标点：\n\
+1. 标点要符合口语节奏（多用逗号、感叹号）\n\
+2. 适当保留口语词（“就是”、“那个”在自然位置可以留）\n\
+3. 表情和语气词（哈哈、嗯嗯、噢）正常保留\n\
+4. 不要书面化，保持像微信发消息的语气\n\
+5. 只输出整理后的文本\n\n\
+原始转写：\n${output}".to_string(),
+        },
+        // 中文代码场景：还原音译英文术语 + 驼峰
+        LLMPrompt {
+            id: "zh_code".to_string(),
+            name: "中文：代码注释 / 技术讨论".to_string(),
+            prompt: "你是一个代码场景的中文转写后处理助手。\n\n\
+输入是开发者口述代码注释或技术讨论的中文转写。常见问题：\n\
+1. 英文技术词被音译成中文（如“由斯艾菲克特”实际是 useEffect）\n\
+2. 没有标点\n\
+3. 驼峰命名被拆成空格分隔（如“use effect” → “useEffect”，“file system” → “fileSystem”）\n\n\
+请：\n\
+1. 把音译的英文术语还原（参考下方词典，根据上下文判断）\n\
+2. 把拆开的驼峰还原（识别上下文判断 camelCase 还是 PascalCase）\n\
+3. 代码块用反引号标记（如 `useEffect`、`useState`）\n\
+4. 补全标点\n\
+5. 中文部分按通用规则去口头禅\n\n\
+**常见英文术语词典**（不完全列举，根据上下文判断）：\n\
+- 由斯艾菲克特 → useEffect\n\
+- 由斯斯戴特 → useState\n\
+- 阿派 / A P I → API\n\
+- 杰森 / 杰森奥布吉特 → JSON / JSON object\n\
+- 普罗米斯 → Promise\n\
+- 阿西克 / 阿西克阿威特 → async / async await\n\
+- 库柏奈提斯 → Kubernetes\n\
+- 多克 → Docker\n\
+- 瑞艾克特 → React\n\
+- 维优 → Vue\n\
+- 太普斯克瑞普特 → TypeScript\n\n\
+只输出整理后的文本。\n\n\
+原始转写：\n${output}".to_string(),
+        },
+    ]
 }
 
 fn default_whisper_gpu_device() -> i32 {
